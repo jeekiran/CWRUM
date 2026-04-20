@@ -1,0 +1,207 @@
+from pathlib import Path
+
+html = r'''<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>CloudWatch JS Error Generator (Test Page)</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 24px; line-height: 1.35; }
+    h1 { margin: 0 0 8px; }
+    .sub { color: #555; margin: 0 0 16px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+    button { padding: 12px 14px; border: 1px solid #ccc; border-radius: 10px; background: #fff; cursor: pointer; text-align: left; }
+    button:hover { background: #f6f6f6; }
+    code { background: #f2f2f2; padding: 2px 6px; border-radius: 6px; }
+    .log { margin-top: 16px; padding: 12px; border: 1px dashed #bbb; border-radius: 10px; background: #fafafa; }
+    .row { display:flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+    .row > * { margin: 4px 0; }
+    input[type="text"] { padding: 10px 12px; border-radius: 10px; border: 1px solid #ccc; min-width: 280px; }
+    .pill { display:inline-block; font-size: 12px; padding: 2px 8px; border-radius: 999px; border: 1px solid #ddd; background:#fff; color:#444; }
+  </style>
+</head>
+<body>
+  <h1>CloudWatch JS Error Generator</h1>
+  <p class="sub">Use the buttons below to deliberately create different JavaScript errors (sync, async, network, resource) so you can validate your <code>CloudWatch Logs</code> ingestion/parsing.</p>
+
+  <div class="row">
+    <span class="pill" id="sessionPill"></span>
+    <span class="pill" id="uaPill"></span>
+  </div>
+
+  <div class="row">
+    <label for="tagInput"><strong>Custom tag:</strong></label>
+    <input id="tagInput" type="text" placeholder="e.g., tvm-test-run-01" />
+    <button id="btnBreadcrumb">Add breadcrumb</button>
+  </div>
+
+  <div class="grid">
+    <button id="btnThrow"><strong>Throw Error</strong><br/><small>Immediate <code>throw new Error()</code></small></button>
+    <button id="btnType"><strong>TypeError</strong><br/><small>Access property of <code>undefined</code></small></button>
+    <button id="btnRef"><strong>ReferenceError</strong><br/><small>Use an undefined variable</small></button>
+    <button id="btnPromise"><strong>Unhandled Promise Rejection</strong><br/><small><code>Promise.reject()</code> without catch</small></button>
+    <button id="btnAsync"><strong>Async Error (setTimeout)</strong><br/><small>Error thrown inside timer</small></button>
+    <button id="btnFetch"><strong>Network Error (fetch)</strong><br/><small>Fetch invalid domain (fails)</small></button>
+    <button id="btnHttp"><strong>HTTP Error (fetch 404)</strong><br/><small>Fetch local missing path</small></button>
+    <button id="btnSyntax"><strong>SyntaxError (eval)</strong><br/><small>Invalid JS evaluated</small></button>
+    <button id="btnResource"><strong>Resource Load Error</strong><br/><small>Load broken script tag</small></button>
+    <button id="btnConsole"><strong>Console Error</strong><br/><small><code>console.error</code> with metadata</small></button>
+  </div>
+
+  <div class="log" id="log"></div>
+
+  <script>
+    // --------- Helpers ---------
+    const sessionId = `sess-${Date.now().toString(36)}-${Math.random().toString(16).slice(2)}`;
+    const logEl = document.getElementById('log');
+
+    function nowIso() { return new Date().toISOString(); }
+
+    function currentTag() {
+      const v = document.getElementById('tagInput').value.trim();
+      return v || 'no-tag';
+    }
+
+    function pushLog(line, obj) {
+      const prefix = `[${nowIso()}][${sessionId}][${currentTag()}]`;
+      const text = obj ? `${prefix} ${line} ${safeJson(obj)}` : `${prefix} ${line}`;
+      console.log(text);
+      logEl.innerHTML = `${escapeHtml(text)}<br/>` + logEl.innerHTML;
+    }
+
+    function safeJson(obj) {
+      try { return JSON.stringify(obj); } catch { return '"<unserializable>"'; }
+    }
+
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+    }
+
+    function meta(extra = {}) {
+      return {
+        sessionId,
+        tag: currentTag(),
+        url: location.href,
+        userAgent: navigator.userAgent,
+        platform: navigator.platform,
+        language: navigator.language,
+        viewport: { w: window.innerWidth, h: window.innerHeight, dpr: window.devicePixelRatio },
+        ...extra
+      };
+    }
+
+    // --------- Global Error Hooks ---------
+    window.addEventListener('error', (event) => {
+      // event.error may be undefined for resource errors
+      const details = {
+        message: event.message,
+        filename: event.filename,
+        lineno: event.lineno,
+        colno: event.colno,
+        isResourceError: !event.message && !!event.target,
+        targetTag: event.target?.tagName,
+        targetSrc: event.target?.src || event.target?.href
+      };
+      pushLog('window.error captured', meta(details));
+    }, true);
+
+    window.addEventListener('unhandledrejection', (event) => {
+      const reason = event.reason;
+      const details = {
+        message: reason?.message || String(reason),
+        stack: reason?.stack,
+      };
+      pushLog('window.unhandledrejection captured', meta(details));
+    });
+
+    // Useful page-level info
+    document.getElementById('sessionPill').textContent = `Session: ${sessionId}`;
+    document.getElementById('uaPill').textContent = `UA: ${navigator.platform}`;
+    pushLog('Page loaded', meta());
+
+    // --------- Buttons ---------
+    document.getElementById('btnBreadcrumb').addEventListener('click', () => {
+      pushLog('Breadcrumb', meta({ breadcrumb: 'user-added-breadcrumb' }));
+    });
+
+    document.getElementById('btnThrow').addEventListener('click', () => {
+      pushLog('Trigger: throw Error', meta({ button: 'Throw Error' }));
+      throw new Error('Test error: explicit throw from button');
+    });
+
+    document.getElementById('btnType').addEventListener('click', () => {
+      pushLog('Trigger: TypeError', meta({ button: 'TypeError' }));
+      const x = undefined;
+      // This will throw TypeError
+      console.log(x.value.deep);
+    });
+
+    document.getElementById('btnRef').addEventListener('click', () => {
+      pushLog('Trigger: ReferenceError', meta({ button: 'ReferenceError' }));
+      // eslint-disable-next-line no-undef
+      console.log(notDefinedAnywhere + 1);
+    });
+
+    document.getElementById('btnPromise').addEventListener('click', () => {
+      pushLog('Trigger: unhandled Promise rejection', meta({ button: 'Unhandled Promise' }));
+      Promise.reject(new Error('Test rejection: unhandled promise'));
+    });
+
+    document.getElementById('btnAsync').addEventListener('click', () => {
+      pushLog('Trigger: async error (setTimeout)', meta({ button: 'Async Error' }));
+      setTimeout(() => {
+        throw new Error('Test async error: thrown inside setTimeout');
+      }, 50);
+    });
+
+    document.getElementById('btnFetch').addEventListener('click', async () => {
+      pushLog('Trigger: network error (fetch invalid domain)', meta({ button: 'Network Error' }));
+      try {
+        await fetch('https://nonexistent.invalid/this-will-fail', { mode: 'no-cors' });
+      } catch (e) {
+        // Still log locally; CloudWatch pipeline can capture via console if wired
+        pushLog('fetch failed (expected)', meta({ error: e.message, stack: e.stack }));
+        throw e;
+      }
+    });
+
+    document.getElementById('btnHttp').addEventListener('click', async () => {
+      pushLog('Trigger: HTTP error (404)', meta({ button: 'HTTP 404' }));
+      const res = await fetch('/this-path-should-404-' + Date.now());
+      if (!res.ok) {
+        const err = new Error(`HTTP ${res.status} ${res.statusText}`);
+        pushLog('HTTP not ok (expected)', meta({ status: res.status, statusText: res.statusText }));
+        throw err;
+      }
+    });
+
+    document.getElementById('btnSyntax').addEventListener('click', () => {
+      pushLog('Trigger: SyntaxError via eval', meta({ button: 'SyntaxError' }));
+      // Intentionally invalid JS
+      // eslint-disable-next-line no-eval
+      eval('function () {');
+    });
+
+    document.getElementById('btnResource').addEventListener('click', () => {
+      pushLog('Trigger: resource load error (bad script src)', meta({ button: 'Resource Error' }));
+      const s = document.createElement('script');
+      s.src = '/missing-script-' + Date.now() + '.js';
+      document.body.appendChild(s);
+    });
+
+    document.getElementById('btnConsole').addEventListener('click', () => {
+      const payload = meta({
+        button: 'Console Error',
+        severity: 'ERROR',
+        sample: { orderId: Math.floor(Math.random() * 100000), component: 'test-page' }
+      });
+      console.error('Test console.error payload', payload);
+      pushLog('console.error emitted', payload);
+    });
+  </script>
+</body>
+</html>
+'''
+
+Path('index.html').write_text(html, encoding='utf-8')
